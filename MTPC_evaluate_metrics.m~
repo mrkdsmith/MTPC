@@ -106,10 +106,6 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 %             replaced with the  randomisation indices
 % output_rand:    [0 or 1]. specifies if output should include the
 %                      randomisation indices.
-% smooth      Specifes if smoothing should be applied prior to computing
-%               AUC. Only applicable if method='auc' (defualt=0); 
-% smooth_fwhm      Specifes the FWHM of smoothing kernel if applied to AUCs
-%                  (default is the agerage derivative of the threshold vector)
 % parallel:  [0 or 1]. Tries to enable parallel processing if parallel
 %                 toolbox is installed (default = 1);
 % 
