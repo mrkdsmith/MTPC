@@ -11,7 +11,7 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 % (C) Mark Drakesmith, Cardiff University
 %
 % Usage:
-%  
+% 
 %   [stats,config] =  MTPC_evaluate_metrics(GT,design)
 % or
 %   [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
@@ -71,16 +71,6 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 %            Note that even though 'scauc' and 'auc' wont correct statistics across
 %            thresholds, it will still correct across any dimensions
 %            specfied in 'corr_dims'.
-%
-% modeltype:  Specfied the kind of statistical model used;
-%              'glm'      Uses the GLM approach (equivilent to t-test,
-%                           ANOVA, ANCOVA, Pearson correlation, etc) (default)
-%              'ranksum'  Uses the rank-sum test between groups (aka
-%                          Mann-Whitney U test). 
-%              'spearman'  Uses the Spearman correlation 
-%                         WARNING: This implimnetation assumes one critical 
-%                         value for both positive and negative corretions,
-%                         which may not be valid. Use with cauton!           '
 %            
 % alpha_corr:         This is the significance level applied when correcting across thresholds 
 %                            or other dimensions (default = 0.05).
@@ -88,9 +78,11 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 % corr_dims:   A vector of  dimensions of the GT metric (in addition to threshold) to be
 %              corrected across. (e.g for a non-specific GT metrics), additional
 %              correction for multiple comparisons across nodes can be carried
-%              out. corr_dims can also be a  cell-array of vectors, to a specific
+%              out. corr_dims can also be a  cell-array of vectors, to a 
 %              specific set of dimensions for each GT metric. 
 %              corr_dims can also be 'all' or 'none'. (default = 'all'). 
+% corrmax_dims  A vector of dimensions to also find a maximum along.
+%              (default = 2 (the threshold dimension - normally only include dimesnions who paramaters you wish to explore for effects but have no hypothesis regarding region of effect). 
 %
 % varnames:    An a cell array of strings indicating the name of each
 %              variable in the design matrix (default =
@@ -106,10 +98,6 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 %             replaced with the  randomisation indices
 % output_rand:    [0 or 1]. specifies if output should include the
 %                      randomisation indices.
-% smooth      Specifes if smoothing should be applied prior to computing
-%               AUC. Only applicable if method='auc' (defualt=0); 
-% smooth_fwhm      Specifes the FWHM of smoothing kernel if applied to AUCs
-%                  (default is the agerage derivative of the threshold vector)
 % parallel:  [0 or 1]. Tries to enable parallel processing if parallel
 %                 toolbox is installed (default = 1);
 % 
@@ -125,7 +113,8 @@ function [stats,config] =  MTPC_evaluate_metrics(GT,design,config)
 % p_corr2       is the permutation corrected p-value at the highest peak.
 % f_crit           is the critical value of F after correction
 % sig_corr2     Indicates if the effect is significant after correction.
-% max_t_thresh_idx  The index of the threshold vector corresponding to the
+% max_t_thresh_idx  The index of the threshold vector (and all other 
+%                  dimensions specifed in corrmax_dim) corresponding to the
 %                    maximum F statistic. 
 % GT_maxt       A cell array of the GT values for each test where the peak
 %                        effect is seen (useful for plotting).
@@ -168,13 +157,11 @@ if ~isfield(config,'alpha_glm');  config.alpha_glm=0.05;            end
 if ~isfield(config,'alpha_corr'); config.alpha_corr=0.05;           end
 if ~isfield(config,'terms');      config.terms = [(eye(n_vars))];   end
 if ~isfield(config,'corr_dims');  config.corr_dims = 'all' ;        end
+if ~isfield(config,'corrmax_dims');config.corrmax_dims = '2' ;      end
 if ~isfield(config,'keep_glm');   config.keep_glm = 0 ;             end
 if ~isfield(config,'keep_rand');  config.keep_rand = 0 ;            end
 if ~isfield(config,'parallel');   config.parallel = 1 ;             end
 if ~isfield(config,'thresh');     config.thresh = 1:n_thresh;       end
-if ~isfield(config,'smooth');     config.smooth = 0;                end
-if ~isfield(config,'smooth_fwhm');config.smooth_fwhm = mean(diff(config.thresh));       end
-if ~isfield(config,'modeltype');     config.modeltype = 'glm';                end
 % 
 % if ~isfield(config,'alpha_scauc'); 
 %     if strcmp(config.method,'scauc') 
@@ -202,22 +189,6 @@ if length(config.varnames)~=(1+n_vars)
     error('Variable names do not match number of variables!');
 end
 
-% check conditions are OK for modeltype
-
-if strcmp(config.modeltype,'glm');
-    modeltype=1;
-elseif strcmp(config.modeltype,'ranksum');
-    modeltype=2;
-    if size(design,2)>1 || length(unique(design))>2
-        error('Only a single-column 2-group design is supported when using ranksum');
-    end
-elseif strcmp(config.modeltype,'spearman');
-    modeltype=3;
-    if length(unique(design))>2
-        error('Only a design of a single column of values is support when using Spearman');
-    end
-    warning('Spearman method is not properly implimented. Use with caution!');
-end
 
 % turn on parallelisation if available
 if config.parallel
@@ -229,7 +200,7 @@ if config.parallel
 %     end
     
     try
-        matlabpool('open', feature('numCores'));
+        parpool;
     catch e
         e
 
@@ -301,17 +272,21 @@ if ~iscell(corr_dims)
     corr_dims=repmat({corr_dims},1,n_metric);
 end
 
+% set up corrmax_dims
+corrmax_dims=config.corrmax_dims;
+if ~iscell(corrmax_dims)
+    % if not specfied as a corr_dim for each metrix, copy across a n_metric
+    % cell array.
+    corrmax_dims=repmat({corrmax_dims},1,n_metric);
+end
+
 
 % create high-res threshold vector using interpretation
 thresh=config.thresh;
 thresh_interp=linspace(thresh(1),thresh(end),2000);
 
 % check method is valid
-if ~(strcmp(config.method,'mtpc+scauc') | ...
-        strcmp(config.method,'mtpc') | ...
-        strcmp(config.method,'scauc') |...
-        strcmp(config.method,'auc') | ...
-        strcmp(config.method,'smthauc'));
+if ~(strcmp(config.method,'mtpc+scauc') | strcmp(config.method,'mtpc') | strcmp(config.method,'scauc') || strcmp(config.method,'auc'))
       error('Unknown method. Valid options are ''mtpc+scauc'', ''mtpc'', ''scauc'' and ''auc''.')
 end
 
@@ -320,68 +295,20 @@ stats=[];
 for m=1:n_metric
     
     
-
+    
     
     % if specified to do the AUC method, compute AUCs for GT metric first
     % (this collapses GT metrics across threhsolds;
     if strcmp(config.method,'auc')
-        % create high-res threshold vector using interpretation (and rest
-        % thresh to original value).
-        thresh=config.thresh;
-        thresh_interp=linspace(thresh(1),thresh(end),2000);
+        %         GTm=GT{m};
+        %         GTm(:,2:end,:)=[];
+        % interpolate the gt metrics
         
         % permute GT matrix so threshodls are first dimension
         gt_temp=permute(GT{m},[2 1 3 4 5 6 7 8]);
         
         % interpolate the gt metrics tohigh res
         gt_interp=interp1(thresh,gt_temp,thresh_interp);
-        
-       % this adds smoothing to thresholded GT metrics if specfied
-    if config.smooth
-        
-        
-        
-      
-       % convert fwlm to stdst
-       sd=config.smooth_fwhm./2.335;
-       
-        kernel=normpdf(thresh_interp-median(thresh_interp),0,sd);
-       
-       
-       
-       kernel=kernel.*(max(gt_interp(:,1))-min(gt_interp(:,1)))+min(gt_interp(:,1));
-       kernel=kernel.*(max(kernel)-min(kernel))+min(kernel);
-       
-       
-       
-       % Construct blurring window.
-       
-       % constrcut kernel. Gasuian kernals full widths should be twice the FWHM
-       windowWidth = int16(2.*config.smooth_fwhm./mean(diff(thresh_interp)));
-       halfwidth=windowWidth/2;
-       kernel=gausswin(double(windowWidth));
-       kernel = kernel / sum(kernel); % Normalize.
-       
-       for j=1:prod(size(gt_interp(1,:)))
-       % pad the edges of the GT data
-       gt_interp_temp=[ones(1,windowWidth/2).*gt_interp(1,j) gt_interp(:,j)' ones(1,windowWidth/2).*gt_interp(end,j)];
-       
-       % convolve GT data with kernel
-       gt_smooth=conv(gt_interp_temp,kernel);
-       
-       l=length(gt_interp(:,j));
-       start_idx=windowWidth;
-       end_idx=start_idx+l-1;
-
-       
-       % replace gt_interp with the smoothed version
-       gt_interp(:,j)=gt_smooth(start_idx:end_idx);
-       
-       end
-       
-       
-    end
-    
         % compute AUC of interpolated GT metric
         gt_auc=trapz(thresh_interp,gt_interp);
         % permute back to original dimensions
@@ -400,6 +327,15 @@ for m=1:n_metric
         corr_dims{m}=2:ndims(GT{m});
     elseif isequal(corr_dims{m},'none')
         corr_dims{m}=2;
+    end
+    
+        if isequal(corrmax_dims{m},'all')
+        corrmax_dims{m}=2:ndims(GT{m});
+    elseif isequal(corrmax_dims{m},'none')
+        corrmax_dims{m}=2;
+        else %make sure thresholds (dim 2) is included in corrmax_dim list
+            corrmax_dims{m}=unique([2 corrmax_dims{m}]);
+            
     end
     
     % dont correct across thresholds when method is 'scauc' or 'auc'
@@ -430,27 +366,12 @@ for m=1:n_metric
         
         for th=1:n_thresh
             fprintf('Analysing GT metric %u, randomisation %u, threshold %u. \n',m,i-1,th);
-            
-            if modeltype==1
+            parfor j=1:numel(GTm(1,1,:))
                 
-                parfor j=1:numel(GTm(1,1,:))
-                    [ p_all_temp2(:,j) t_all_temp2(:,j) f_all_temp2(:,j) coefnames{j} mdl{j} tbl{j}] = ...
-                        glm_subfunc(GTm(rand_idx(:,i),th,j),design,terms,config.varnames);
-                end
-            elseif modeltype==2
-                parfor j=1:numel(GTm(1,1,:))
-                    [ p_all_temp2(:,j) f_all_temp2(:,j)] =  ranksum_subfunc(GTm(rand_idx(:,i),th,j),design);
-                    t_all_temp2(:,j) = f_all_temp2(:,j);
-                end
-            elseif modeltype==3
-                parfor j=1:numel(GTm(1,1,:))
-                    [ p_all_temp2(:,j) f_all_temp2(:,j)] = ...
-                        spearman_subfunc(GTm(rand_idx(:,i),th,j),design);
-                    t_all_temp2(:,j) = f_all_temp2(:,j);
-                end
-            end
-
-                    
+                
+                [ p_all_temp2(:,j) t_all_temp2(:,j) f_all_temp2(:,j) coefnames{j} mdl{j} tbl{j}] = ...
+                    glm_subfunc(GTm(rand_idx(:,i),th,j),design,terms,config.varnames);
+                
                 %                 %
                 %                 % fit the glm
                 %                 mdl=LinearModel.fit(design,GTm(rand_idx(:,i),th,j),config.terms,'VarNames',config.varnames);
@@ -471,7 +392,7 @@ for m=1:n_metric
                 %                     end
                 %                 end
                 
-
+            end
             p_all_temp(:,i,th,:)=permute(p_all_temp2,[1 3 4 2]);
             t_all_temp(:,i,th,:)=permute(t_all_temp2,[1 3 4 2]);
             f_all_temp(:,i,th,:)=permute(f_all_temp2,[1 3 4 2]);
@@ -547,33 +468,99 @@ for m=1:n_metric
     stats(m).p_corr1=permute(p_corr_temp,[1 3 4 5 6 7 8 9 2]);
     stats(m).sig_corr1=stats(m).p_corr1<alpha_corr;
     
-    if modeltype==1
+    
     stats(m).coefnames=coefnames{1};
     stats(m).design=design;
     stats(m).terms=terms;
-    end
+    
     
     % if doing MTPC, we need to find the peak effect across thresholds
     if strcmp(config.method,'mtpc') | strcmp(config.method,'mtpc+scauc') | strcmp(config.method,'scauc')
         % get the threshold of maximum effect
-        [mat_temp tidx_corr2]=nanmax(stats(m).t_orig1,[],2);
-        stats(m).max_t_thresh_idx=permute(tidx_corr2,[1 3 4 5 6 7 8 9 2]);
+        
+
+       %  fstat_temp=stats(m).f_orig1;
+        % find peak effect in each of the corrmax_dims
+        mat_temp=stats(m).f_orig1;
+        for d=1:length(corrmax_dims{m})
+            dim_temp=corrmax_dims{m}(d);
+
+            % mat_temp reduces in dimensions on each itteration until the
+            % max across the whole space is found. 
+            [mat_temp tidx_corr2{d}]=nanmax(mat_temp,[],dim_temp);
+            
+        end
+        
+        % find the index of where the max effect is found
+        tidx_corr_temp=1;
+        for d=length(tidx_corr2):-1:1 % need to work bacwards
+            stats(m).max_t_thresh_idx(d)=tidx_corr2{d}(tidx_corr_temp);
+            tidx_corr_temp=stats(m).max_t_thresh_idx(d);
+        end
+        
+%         
+%         
+%         
+%   %      mat_temp(1)=[];
+%         
+%         % now find max effect across all corr_dims
+%            [max_all]=nanmax(mat_temp{1},[],dim_temp);
+%         for d=2:length(mat_temp)
+%             stats(m).max_t_thresh_idx(d) = find(mat_temp{d}==max_all);
+%         end
+%          
+%             
+%             
+%             
+% 
+%        %  stats(m).max_t_thresh_idx(d)=permute(tidx_corr2,[1 3 4 5 6 7 8 9 2]);
+%        stats(m).max_t_thresh_idx(d)=tidx_corr2;
         
         %
-        stats(m).p_orig2=zeros(size(stats(m).max_t_thresh_idx));
+        
+        tidx_temp=stats(m).max_t_thresh_idx;
+        
+
+                
+        
+        
+        stats(m).p_orig2=zeros(size(mat_temp));
         stats(m).t_orig2=stats(m).p_orig2;
         stats(m).p_corr2=stats(m).p_orig2;
         stats(m).sig_corr2=stats(m).p_orig2;
         for c=1:n_terms
-            for j=1:numel(GTm(1,1,:))
-                stats(m).p_orig2(c,j)=stats(m).p_orig1(c,tidx_corr2(c,1,j),j);
-                stats(m).t_orig2(c,j)=stats(m).t_orig1(c,tidx_corr2(c,1,j),j);
-                stats(m).p_corr2(c,j)=stats(m).p_corr1(c,tidx_corr2(c,1,j),j);
-                stats(m).sig_corr2(c,j)=stats(m).sig_corr1(c,tidx_corr2(c,1,j),j);
-                
-                stats(m).GT_maxt{c,j}=GTm(:,tidx_corr2(c,1,j),j);
+            
+            %make an indexing string
+            index_string='';
+            for d=2:ndims(GTm)
+                if ismember(d,corrmax_dims{m});
+                    index_string=[index_string ',' num2str(stats(m).max_t_thresh_idx(c,d-1))];
+                else
+                    index_string=[index_string ',:'];
+                end
             end
+            index_string(1)=[];
+            
+            stats(m).p_orig2(c,:)=eval(['stats(m).p_orig1(c,' index_string ');']);
+            stats(m).t_orig2(c,:)=eval(['stats(m).t_orig1(c,' index_string ');']);
+            stats(m).p_corr2(c,:)=eval(['stats(m).p_corr1(c,' index_string ');']);
+            stats(m).sig_corr2(c,:)=eval(['stats(m).sig_corr1(c,' index_string ');']);
+            
+            stats(m).GT_maxt={};
+            stats(m).GT_maxt(c,:)={eval(['GTm(:,' index_string ');'])};
+            
+            
+            %             for j=1:numel(GTm(1,1,:))
+            %                 stats(m).p_orig2(c,j)=stats(m).p_orig1(c,tidx_temp(c,1,j),j);
+            %                 stats(m).t_orig2(c,j)=stats(m).t_orig1(c,tidx_corr2(c,1,j),j);
+            %                 stats(m).p_corr2(c,j)=stats(m).p_corr1(c,tidx_corr2(c,1,j),j);
+            %                 stats(m).sig_corr2(c,j)=stats(m).sig_corr1(c,tidx_corr2(c,1,j),j);
+            %
+            %                 stats(m).GT_maxt{c,j}=GTm(:,tidx_corr2(c,1,j),j);
+            %             end
         end
+    
+        
     elseif strcmp(config.method,'auc')
         % if doing AUC, store the GT AUCs
         for c=1:n_terms
@@ -656,7 +643,7 @@ n_terms=size(terms,1);
 terms = [zeros(1,size(terms,2)) ; terms];
 %
 % fit the glm
-mdl=LinearModel.fit(design,gt,terms,'VarNames',varnames);
+mdl=LinearModel.fit(double(design),double(gt),terms,'VarNames',varnames);
 
 % compute F statistics from GLM
 tbl=anova(mdl);
@@ -674,35 +661,5 @@ for c=1:n_terms
     
 end
 
-                  
-function [p_temp f_temp] =  ranksum_subfunc(gt,design)
 
-% binariise design
-
-design_unique=unique(design);
-design(find(design_unique(1)))=0;
-design(find(design_unique(2)))=1;
-
-% correlate GT data with tat int he design matrix
-
-[p_temp,h,stats] = ranksum(gt(find(design)),gt(find(~design)));
-f_temp=stats.ranksum;
-%
-
-                    
-                    
-function [p_temp f_temp] =  spearman_subfunc(gt,design)
-
-
-% correlate GT data with tat int he design matrix
-
-[f_temp,p_temp] = corr(gt,design,'type','Spearman');
-
-%
-f_temp=abs(f_temp(1,2));
-p_temp=p_temp(1,2);
-
-
-
-
-
+% F_temp=F;
